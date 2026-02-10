@@ -17,11 +17,11 @@ Identificação do sistema operacional (0,4) ✅
 ## 2.2 Servidor / Consolidação (2,0 pontos)
 Dashboard em terminal ou interface gráfica simples com lista de clientes, última atualização, sistema operacional e IP principal (0,5) ✅
 
-Consolidação dos dados com cálculo de média simples e contagem de clientes online e offline. ✅️
+Consolidação dos dados com cálculo de média simples e contagem de clientes online e offline. Cliente offline é aquele que não responde ao mecanismo de hello por mais de 30 segundos (0,5) ✅
 
-Cliente offline é aquele que não responde ao mecanismo de hello por mais de 30 segundos (0,5) ✅
+Funcionalidade de detalhamento de um cliente selecionado (0,5) ✅
 
-Funcionalidade de detalhamento de um cliente selecionado (0,5) * Exportação de relatórios do consolidado geral e de um cliente específico nos formatos CSV ou JSON (0,5)✅️
+Exportação de relatórios do consolidado geral e de um cliente específico nos formatos CSV ou JSON (0,5) ✅️
 
 ## 3. REQUISITOS PRINCIPAIS (4,0 PONTOS)
 Arquitetura Cliente/Servidor (1,0) ✅
@@ -35,7 +35,9 @@ Utilização do paradigma de Orientação a Objetos, com organização clara e m
 ## 4. SEGURANÇA (1,0 PONTO)
 Comunicação segura utilizando criptografia e mecanismos de integridade ponta a ponta (0,5)
 
-Autenticação dos clientes e controle de acesso por perfil (0,3) * Auditoria no servidor, registrando ações executadas, responsáveis e data/hora (0,2)✅️
+Autenticação dos clientes e controle de acesso por perfil (0,3) ✅️
+
+Auditoria no servidor, registrando ações executadas, responsáveis e data/hora (0,2) ✅️
 
 ## 5. BÔNUS (ATÉ 2,0 PONTOS)
 Controle remoto do mouse do cliente (1,0)
