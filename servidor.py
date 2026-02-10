@@ -1,132 +1,195 @@
-import socket      # Comunicação em rede (UDP/TCP)
-import threading   # Multiprocessamento para atender vários clientes simultâneos
-import time        # Controle de tempo para timeouts e batimentos cardíacos
-import json        # Decodificação do protocolo de aplicação (JSON)
+import socket
+import threading
+import time
+import json
+import csv
+import os
+from datetime import datetime
+from cryptography.fernet import Fernet
 
-class MonitorServer:
-    """
-    Classe que representa o Servidor Central de Inventário.
-    Implementa Sockets Híbridos (UDP/TCP) e gerencia o ciclo de vida dos clientes.
-    """
-    def __init__(self, host='0.0.0.0', udp_port=5000, tcp_port=5001):
+CHAVE_SECRETA = b'H71UvbUqhpFs-msgneVYD_2-j8hRDJFWxlnZOUedecQ='
+
+
+class ServidorMonitoramento:
+    def __init__(self, host='0.0.0.0', porta_udp=5000, porta_tcp=5001):
         self.host = host
-        self.udp_port = udp_port
-        self.tcp_port = tcp_port
-        # Dicionário para armazenamento em memória dos agentes conectados
-        self.clients = {}  #{ ip: { 'dados': {}, 'last_seen': timestamp, 'status': 'ONLINE' } }
-        self.running = True
+        self.porta_udp = porta_udp
+        self.porta_tcp = porta_tcp
+        self.clientes = {}
+        self.executando = True
+        self.cifrador = Fernet(CHAVE_SECRETA)
 
-    def udp_discovery_service(self):
-        """
-        Serviço de Descoberta Automática. 
-        Utiliza protocolo UDP por ser não orientado à conexão e permitir Broadcast.
-        """
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
-            sock.bind((self.host, self.udp_port))
-            while self.running:
-                data, addr = sock.recvfrom(1024)
-                # Resposta ao sinal de 'handshake' inicial do cliente
-                if data.decode() == "ONDE_ESTA_O_SERVIDOR?":
-                    sock.sendto("AQUI_ESTA_O_SERVIDOR".encode(), addr)
+        os.makedirs("logs", exist_ok=True)
+        os.makedirs("relatorios", exist_ok=True)
 
-    def handle_client_connection(self, conn, addr):
-        """
-        Trata o fluxo de dados individual de cada cliente via TCP.
-        Iniciado em uma nova Thread para garantir a escalabilidade do servidor.
-        """
+        self.registrar_auditoria("Servidor iniciado.")
+
+    def registrar_auditoria(self, mensagem): 
+        caminho_arquivo = os.path.join("logs", "auditoria.log")
+        with open(caminho_arquivo, "a") as arquivo:
+            data_hora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            arquivo.write(f"[{data_hora}] {mensagem}\n")
+
+    def exportar_csv(self):
         try:
-            with conn:
-                dados_brutos = conn.recv(4096) # Buffer de recepção
-                if dados_brutos:
-                    pacote = json.loads(dados_brutos.decode('utf-8'))
-                    
-                    # Atualiza ou insere o registro do cliente na base de dados
-                    self.clients[addr[0]] = {
-                        "dados": pacote,
-                        "last_seen": time.time(),
-                        "status": "ONLINE"
-                    }
-                    self.exibir_dashboard_consolidado()
+            nome_arquivo = f"relatorio_{datetime.now().strftime('%Y%m%d_%H%M')}.csv"
+            caminho_completo = os.path.join("relatorios", nome_arquivo)
+
+            with open(caminho_completo, mode='w', newline='') as arquivo:
+                escritor = csv.writer(arquivo)
+                escritor.writerow(['IP', 'Hostname', 'SO', 'Nucleos CPU', 'RAM Livre (GB)', 'Status', 'Interfaces'])
+
+                for ip, info in self.clientes.items():
+                    dados = info['dados']
+
+                    try:
+                        hostname = socket.gethostbyaddr(ip)[0] if info['status'] == 'ONLINE' else 'Desconhecido'
+                    except:
+                        hostname = "Desconhecido"
+
+                    interfaces_texto = "; ".join([f"{i['nome']}({i['tipo']})" for i in dados.get('interfaces', [])])
+
+                    escritor.writerow([
+                        ip,
+                        hostname,
+                        dados.get('sistema_operacional', 'N/A'),
+                        dados.get('nucleos_cpu', 0),
+                        dados.get('ram_livre_gb', 0),
+                        info['status'],
+                        interfaces_texto
+                    ])
+            self.registrar_auditoria(f"Relatório exportado: {caminho_completo}")
+            return caminho_completo
         except Exception as e:
-            print(f"[ERRO] Falha no processamento do cliente {addr[0]}: {e}")
+            self.registrar_auditoria(f"Erro ao exportar CSV: {e}")
+            return None
 
-    def tcp_server_service(self):
-        """Serviço de escuta TCP para recebimento do inventário."""
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server_sock:
-            server_sock.bind((self.host, self.tcp_port))
-            server_sock.listen(10) # Fila de espera para novas conexões
-            while self.running:
-                conn, addr = server_sock.accept()
-                # Delegação da conexão para uma thread específica (Concorrência)
-                threading.Thread(target=self.handle_client_connection, args=(conn, addr)).start()
+    def servico_descoberta_udp(self):
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.bind((self.host, self.porta_udp))
+            while self.executando:
+                try:
+                    dados, endereco = sock.recvfrom(1024)
+                    if dados.decode() == "ONDE_ESTA_O_SERVIDOR?":
+                        sock.sendto("AQUI_ESTA_O_SERVIDOR".encode(), endereco)
+                except:
+                    pass
 
-    def check_timeouts(self):
-        """
-        Verifica a vivacidade dos clientes.
-        Se o 'last_seen' for superior a 30s, o cliente é marcado como OFFLINE.
-        """
-        while self.running:
-            now = time.time()
-            for ip, info in list(self.clients.items()):
-                if now - info['last_seen'] > 30 and info['status'] == "ONLINE":
-                    info['status'] = "OFFLINE"
-                    print(f"\n[ALERTA] Cliente {ip} perdido (Timeout de 30s).")
+    def gerenciar_conexao_cliente(self, conexao, endereco):
+        try:
+            with conexao:
+                dados_criptografados = conexao.recv(8192)
+                if dados_criptografados:
+                    try:
+                        dados_bytes = self.cifrador.decrypt(dados_criptografados)
+                        pacote = json.loads(dados_bytes.decode('utf-8'))
+
+                        self.clientes[endereco[0]] = {
+                            "dados": pacote,
+                            "ultimo_visto": time.time(),
+                            "status": "ONLINE"
+                        }
+                        self.registrar_auditoria(f"Dados recebidos e autenticados de {endereco[0]}")
+                    except Exception:
+                        print(f"!!! TENTATIVA DE ACESSO NÃO AUTORIZADO DE {endereco[0]} !!!")
+                        self.registrar_auditoria(f"ALERTA DE SEGURANÇA: Falha de descriptografia de {endereco[0]}")
+        except Exception as e:
+            print(f"Erro na conexão com {endereco}: {e}")
+
+    def servico_servidor_tcp(self):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock_servidor:
+            sock_servidor.bind((self.host, self.porta_tcp))
+            sock_servidor.listen(5)
+            while self.executando:
+                try:
+                    conexao, endereco = sock_servidor.accept()
+                    threading.Thread(target=self.gerenciar_conexao_cliente, args=(conexao, endereco)).start()
+                except:
+                    pass
+
+    def verificar_inatividade(self):
+        while self.executando:
+            agora = time.time()
+            for ip, info in list(self.clientes.items()):
+                if agora - info['ultimo_visto'] > 30:
+                    if info['status'] == "ONLINE":
+                        info['status'] = "OFFLINE"
+                        self.registrar_auditoria(f"Cliente {ip} ficou OFFLINE (Timeout)")
             time.sleep(5)
 
-    def exibir_dashboard_consolidado(self):
-        """
-        Calcula médias globais e apresenta o status da rede.
-        """
-        clientes_online = [c for c in self.clients.values() if c['status'] == "ONLINE"]
-        total = len(clientes_online)
+    def loop_painel(self):
+        ultima_exportacao = time.time()
 
-        print("\n" + "="*50)
-        print(f" DASHBOARD DE MONITORAMENTO - {time.strftime('%H:%M:%S')} ")
-        print(f" Agentes Registrados: {len(self.clients)} | Agentes Online: {total}")
-        
-        if total > 0:
-            #Cria variáveis para acumular a soma
-            soma_ram = 0
-            soma_disco = 0
+        while self.executando:
+            os.system('cls' if os.name == 'nt' else 'clear')
 
-            # Passa por cada cliente online e soma seus valores
-            for cliente in clientes_online:
-                # Acessa o dicionário de dados do cliente atual
-                dados = cliente['dados']
-                
-                # Acumula os valores
-                soma_ram   += dados['ram_livre_gb']
-                soma_disco += dados['disco_livre_gb']
+            ram_total = 0
+            contagem_online = 0
+            contagem_offline = 0
 
-            #Calcula a média final (Soma Total / Quantidade de Clientes)
-            media_ram = soma_ram / total
-            media_disco = soma_disco / total
-            
-            print(f" Média de Memória RAM Livre: {media_ram:.2f} GB")
-            print(f" Média de Espaço em Disco:  {media_disco:.2f} GB")
-        
-        print("="*50)
+            print("-" * 150)
+            print(f" SISTEMA DE MONITORAMENTO - {datetime.now().strftime('%H:%M:%S')}")
+            print("-" * 150)
 
-    def start(self):
-        """Orquestrador das threads de serviço."""
-        print(f"[*] Servidor pronto. Aguardando sinalização UDP/TCP...")
-        
-        # Inicialização das threads de background
-        threads = [
-            threading.Thread(target=self.udp_discovery_service, daemon=True),
-            threading.Thread(target=self.tcp_server_service, daemon=True),
-            threading.Thread(target=self.check_timeouts, daemon=True)
-        ]
-        
-        for t in threads:
-            t.start()
+            print(f"{'IP':<16} | {'SO':<10} | {'CPU%':<6} | {'DISCO':<8} | {'RAM':<6} | {'INTERFACES':<35} | {'STATUS':<8}")
+
+            print("-" * 150)
+
+            for ip, info in self.clientes.items():
+                dados = info['dados']
+                status = info['status']
+
+                if status == "ONLINE":
+                    contagem_online += 1
+                    ram_total += dados.get('ram_livre_gb', 0)
+                else:
+                    contagem_offline += 1
+
+                interfaces = dados.get('interfaces', [])
+
+
+                interfaces_texto = "; ".join(
+                    [f"{i['nome']}({i['status']},{i['tipo']})" for i in interfaces[:4]]
+                )
+
+                uso_cpu = dados.get('uso_cpu_percent', 0)
+                disco_livre = dados.get('disco_livre_gb', 0)
+                ram_livre = dados.get('ram_livre_gb', 0)
+                so_nome = dados.get('sistema_operacional', 'N/A')
+                status = info['status']
+
+                print(
+                    f"{ip:<16} | {so_nome[:10]:<10} | {uso_cpu:<6} | {disco_livre:<8} | "
+                    f"{ram_livre:<6} | {interfaces_texto:<35} | {status:<8}"
+                )
+
+            print("-" * 150)
+            media_ram = round(ram_total / contagem_online, 2) if contagem_online > 0 else 0
+            print(
+                f"RESUMO: Online: {contagem_online} | Offline: {contagem_offline} | Média RAM Livre (Online): {media_ram} GB")
+            print("-" * 150)
+            print("Pressione Ctrl+C para encerrar o servidor.")
+
+            if time.time() - ultima_exportacao > 60:
+                self.exportar_csv()
+                ultima_exportacao = time.time()
+                print(">> Relatório CSV exportado automaticamente.")
+
+            time.sleep(2)
+
+    def iniciar(self):
+        threading.Thread(target=self.servico_descoberta_udp, daemon=True).start()
+        threading.Thread(target=self.servico_servidor_tcp, daemon=True).start()
+        threading.Thread(target=self.verificar_inatividade, daemon=True).start()
 
         try:
-            while True: time.sleep(1) # Mantém a thread principal viva
+            self.loop_painel()
         except KeyboardInterrupt:
-            self.running = False
-            print("\n[FECHANDO] Encerrando serviços do servidor...")
+            self.executando = False
+            self.registrar_auditoria("Servidor encerrado pelo usuário.")
+            print("\nEncerrando...")
+
 
 if __name__ == "__main__":
-    servidor = MonitorServer()
-    servidor.start()
+    servidor = ServidorMonitoramento()
+    servidor.iniciar()

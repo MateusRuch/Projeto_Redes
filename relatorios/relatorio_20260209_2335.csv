@@ -1,0 +1,2 @@
+IP,Hostname,SO,Nucleos CPU,RAM Livre (GB),Status,Interfaces
+192.168.0.234,ryanalds-PC,Linux 6.8.0-90-generic,8,0.54,ONLINE,lo(LOOPBACK); wlo1(LOOPBACK)
